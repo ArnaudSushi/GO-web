@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GO</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js"></script>
+<script>
+var FancyWebSocket = function(url)
+{
+	var callbacks = {};
+	var ws_url = url;
+	var conn;
+
+	this.bind = function(event_name, callback){
+		callbacks[event_name] = callbacks[event_name] || [];
+		callbacks[event_name].push(callback);
+		return this;// chainable
+	};
+
+	this.send = function(event_name, event_data){
+		this.conn.send( event_data );
+		return this;
+	};
+
+	this.connect = function() {
+		if ( typeof(MozWebSocket) == 'function' )
+			this.conn = new MozWebSocket(url);
+		else
+			this.conn = new WebSocket(url);
+
+		// dispatch to the right handlers
+		this.conn.onmessage = function(evt){
+			dispatch('message', evt.data);
+		};
+
+		this.conn.onclose = function(){dispatch('close',null)}
+		this.conn.onopen = function(){dispatch('open',null)}
+	};
+
+	this.disconnect = function() {
+		this.conn.close();
+	};
+
+	var dispatch = function(event_name, message){
+		var chain = callbacks[event_name];
+		if(typeof chain == 'undefined') return; // no callbacks for this event
+		for(var i = 0; i < chain.length; i++){
+			chain[i]( message )
+		}
+	}
+};
+
+var Pawn = function(pawnColor, xCoord, yCoord) {
+	this.color = pawnColor;
+	this.x = parseInt(xCoord);
+	this.y = parseInt(yCoord);
+};
+
+var Chain = function (pawn) {
+	this.color = pawn.color;
+	this.pawns = [pawn];
+	this.freedoms = [];
+
+	if (pawn.x - 1 >=  0 && playBoard[pawn.x - 1][pawn.y] == 0) this.freedoms.push({ x: pawn.x - 1, y: pawn.y })
+	if (pawn.x + 1 <= 18 && playBoard[pawn.x + 1][pawn.y] == 0) this.freedoms.push({ x: pawn.x + 1, y: pawn.y })
+	if (pawn.y - 1 >=  0 && playBoard[pawn.x][pawn.y - 1] == 0) this.freedoms.push({ x: pawn.x, y: pawn.y - 1 })
+	if (pawn.y + 1 <= 18 && playBoard[pawn.x][pawn.y + 1] == 0) this.freedoms.push({ x: pawn.x, y: pawn.y + 1 })
+
+	this.isFreedom = function(x, y) {
+		var isFreedom = false;
+		this.freedoms.forEach(function(element) {
+			if (element.x == x && element.y == y) {
+				isFreedom = true;
+				return;
+			}
+		});
+		return isFreedom;
+	};
+
+	this.append = function(pawn) {
+		this.pawns.push(pawn);
+	};
+
+	this.merge = function(otherChain) {
+		for (i = 0; i < otherChain.pawns.length; i++) {
+			this.pawns.push(otherChain.pawns[i]);
+		}
+	};
+
+	this.hasFreedom = function() {
+		this.freedoms = [];
+		for (i = 0; i < this.pawns.length; i++) {
+			if (this.pawns[i].x - 1 >=  0 && playBoard[this.pawns[i].x - 1][this.pawns[i].y] == 0 && !this.isFreedom(this.pawns[i].x - 1, this.pawns[i].y)) this.freedoms.push({ x: this.pawns[i].x - 1, y: this.pawns[i].y })
+			if (this.pawns[i].x + 1 <= 18 && playBoard[this.pawns[i].x + 1][this.pawns[i].y] == 0 && !this.isFreedom(this.pawns[i].x + 1, this.pawns[i].y)) this.freedoms.push({ x: this.pawns[i].x + 1, y: this.pawns[i].y })
+			if (this.pawns[i].y - 1 >=  0 && playBoard[this.pawns[i].x][this.pawns[i].y - 1] == 0 && !this.isFreedom(this.pawns[i].x, this.pawns[i].y - 1)) this.freedoms.push({ x: this.pawns[i].x, y: this.pawns[i].y - 1 })
+			if (this.pawns[i].y + 1 <= 18 && playBoard[this.pawns[i].x][this.pawns[i].y + 1] == 0 && !this.isFreedom(this.pawns[i].x, this.pawns[i].y + 1)) this.freedoms.push({ x: this.pawns[i].x, y: this.pawns[i].y + 1 })
+		}
+		return this.freedoms.length > 0;
+	};
+
+	this.erase = function() {
+		playedPawns = document.getElementsByTagName("circle");
+		this.pawns.forEach(function(pawn) {
+			for (i = 0; i < playedPawns.length; i++) {
+				if (pawn.x == playedPawns[i].getAttribute("xCoord") && pawn.y==playedPawns[i].getAttribute("yCoord")) {
+					board.removeChild(playedPawns[i]);
+					playBoard[pawn.x][pawn.y] = 0;
+					break;
+				}
+			}
+		});
+	};
+};
+</script>
+
+<script>
+	var Server;
+
+	function log( text ) {
+		$log = $('#log');
+		//Add text to log
+		$log.append(($log.val()?"\n":'')+text);
+		//Autoscroll
+		$log[0].scrollTop = $log[0].scrollHeight - $log[0].clientHeight;
+	}
+
+	function send( text ) {
+		var obj2send = { kind: "txt", content: text }
+		Server.send( 'message', JSON.stringify(obj2send));
+	}
+
+	$(document).ready(function() {
+		log('Connecting...');
+		Server = new FancyWebSocket('ws://176.31.250.160:9300');
+
+		$('#message').keypress(function(e) {
+			if ( e.keyCode == 13 && this.value ) {
+				log( 'You: ' + this.value );
+				send( this.value );
+
+				$(this).val('');
+			}
+		});
+
+		//Let the user know we're connected
+		Server.bind('open', function() {
+			log( "Connected." );
+		});
+
+		//OH NOES! Disconnection occurred.
+		Server.bind('close', function( data ) {
+			log( "Disconnected." );
+		});
+
+		//Log any messages sent from server
+		Server.bind('message', function( payload ) {
+			console.log(payload);
+			receivedObj = JSON.parse(payload)
+			switch(receivedObj.kind) {
+			case "txt":
+				log( receivedObj.content );
+				break;
+			case "gameColor":
+				playerColor = receivedObj.content;
+				switch(playerColor) {
+					case "black":
+						opponentColor = "white";
+						break;
+					case "white":
+						opponentColor = "black";
+						break;
+				}
+				document.getElementById("title").innerHTML = "Welcome, you have the " + playerColor + " pawns";
+				break;
+			case "gameBegin":
+				gameIsOn = receivedObj.content;
+				if (playerColor === "black") myTurn = true;
+				break;
+			case "conn":
+				document.location.replace("http://176.31.250.160/go/index.php");
+				break;
+			case "game":
+				opponentPlay(receivedObj.x, receivedObj.y);
+				myTurn = true;
+				break;
+			}
+		});
+
+		Server.connect();
+	});
+
+function opponentPlay(x, y) {
+
+	playBoard[x][y] = 2;
+
+	//check all opponent player's chains 
+	var chainsToMerge = [];
+	var chainsToDeleteIndexes = [];
+    for (i = 0; i < opponentChains.length; i++) {
+		if (opponentChains[i].isFreedom(x, y)) {
+			chainsToMerge.push(opponentChains[i]);
+				chainsToDeleteIndexes.push(i);
+		}
+    }
+
+	if (chainsToMerge.length == 0) {
+		var newChain = new Chain(new Pawn(opponentColor, x, y));
+	} else {
+		//merging here
+		newChain = new Chain(new Pawn(opponentColor, parseInt(x), parseInt(y)));
+		chainsToMerge.forEach(function(chainToMerge) {
+			newChain.merge(chainToMerge);
+		});
+	}
+
+	//check if stone(s) have been taken from us
+	var i = 0;
+	while (i < myChains.length) {
+		for (j = 0; j < myChains[i].freedoms.length; j++){
+			if (myChains[i].freedoms[j].x == x && myChains[i].freedoms[j].y == y) {
+				myChains[i].freedoms.splice(j, 1);
+			}
+		}
+		if (!myChains[i].hasFreedom()) {
+			myChains[i].erase();
+			myChains.splice(i, 1);
+		} else {
+			i++;
+		}
+	}
+
+	while (chainsToDeleteIndexes.length > 0) {
+		deleteIndex = chainsToDeleteIndexes.pop();
+		opponentChains.splice(deleteIndex, 1);
+	}
+	opponentChains.push(newChain);
+
+	circle = document.createElementNS(svgNS, "circle");
+	circle.setAttribute("cx", vertL[x].x1.baseVal.value);
+	circle.setAttribute("cy", horizL[y].y1.baseVal.value);
+	circle.setAttribute("xCoord", x);
+ 	circle.setAttribute("yCoord", y);
+	circle.setAttribute("r", 12);
+	circle.setAttribute("fill", opponentColor);
+	circle.setAttribute("opacity", 1);
+	board.appendChild(circle);
+
+	checkAllChainsFreedoms();
+	myTurn = true;
+}
+</script>
+</head>
+
+<body>
+
+    <div>
+	<h2 id="title">Welcome</h2>
+    </div>
+
+    <div onmousemove="showPawnPreview(event);" onclick="hasClicked();" style="float:left;">
+	    <svg id="board" width="630" height="630">
+		<rect id="gameArea" width="627" height="627" style="fill:rgb(255,204,102);stroke-width:3;stroke:rgb(0,0,0)" />
+	    </svg>
+    </div>
+	<div id='body'>
+		<textarea id='log' name='log' readonly='readonly'></textarea><br/>
+		<input type='text' id='message' name='message' />
+	</div>
+</body>
+
+<script>
+var gameIsOn = false;
+var myTurn = false;
+var playerColor = "none";
+var myChains = [];
+var opponentChains = [];
+
+var playBoard = new Array(19);
+for (i = 0; i < 19; i++) {
+    playBoard[i] = new Array(19);
+    for (j = 0; j < 19; j++) {
+	playBoard[i][j] = 0;
+    }
+}
+
+var svgNS = "http://www.w3.org/2000/svg";
+
+var i;
+var horizL = [];
+var vertL = [];
+var board = document.getElementById("board");
+var gArea = document.getElementById("gameArea");
+var spacing;
+for (i = 0; i < 19; i++) {
+    console.log(svgNS);
+
+    spacing = i*(gArea.width.baseVal.value/19) + 15;
+    lineOffset = 15;
+    horizL[i] = document.createElementNS(svgNS, "line");
+    horizL[i].setAttribute("x1", lineOffset);
+    horizL[i].setAttribute("x2", gArea.width.baseVal.value - lineOffset - 3);
+    horizL[i].setAttribute("y1", spacing);
+    horizL[i].setAttribute("y2", spacing);
+    horizL[i].style.stroke = "black";
+
+    vertL[i] = document.createElementNS(svgNS, "line");
+    vertL[i].setAttribute("x1", spacing);
+    vertL[i].setAttribute("x2", spacing);
+    vertL[i].setAttribute("y1", lineOffset);
+    vertL[i].setAttribute("y2", gArea.width.baseVal.value - lineOffset - 3);
+    vertL[i].style.stroke = "black";
+
+    board.appendChild(horizL[i]);
+    board.appendChild(vertL[i]);
+    //<line y1="0" style="stroke:rgb(255,0,0);stroke-width:2" x1="47" x2="47" y2="800"></line>
+}
+
+var points = [];
+for (i = 3; i < 20; i = i+6) {
+    for (j = 3; j < 20; j = j+6) {
+        points[i, j] = document.createElementNS(svgNS, "circle");
+        points[i, j].setAttribute("cx", vertL[i].x1.baseVal.value);
+        points[i, j].setAttribute("cy", horizL[j].y1.baseVal.value);
+        points[i, j].style.stroke = "black";
+        points[i, j].setAttribute("r", 4);
+        board.appendChild(points[i, j]);
+    }
+}
+
+var circle;
+function showPawnPreview(e) {
+
+    if (document.getElementById("pawn") != null) {
+        document.getElementById("board").removeChild(document.getElementById("pawn"));
+    }
+
+    var boardCoord = board.getBoundingClientRect();
+    var x = e.clientX - boardCoord.x - 15;
+    var y = e.clientY - boardCoord.y - 15;
+    var nearestLeft;
+    var nearestRight;
+    nearestH = Math.round(x / (gArea.width.baseVal.value/19));
+    nearestV = Math.round(y / (gArea.width.baseVal.value/19));
+
+	circle = document.createElementNS(svgNS, "circle");
+	circle.setAttribute("id", "pawn");
+	circle.setAttribute("cx", vertL[nearestH].x1.baseVal.value);
+	circle.setAttribute("cy", horizL[nearestV].y1.baseVal.value);
+ 	circle.setAttribute("xCoord", nearestH);
+ 	circle.setAttribute("yCoord", nearestV);
+ 	circle.setAttribute("r", 12);
+ 	circle.setAttribute("fill", playerColor);
+ 	circle.setAttribute("opacity", 0.4);
+ 	board.appendChild(circle);
+}
+
+function checkAllChainsFreedoms() {
+	myChains.forEach(function(oneOfMyChain) { oneOfMyChain.hasFreedom(); });
+	opponentChains.forEach(function(oneOfOpponentChain) { oneOfOpponentChain.hasFreedom(); });
+}
+
+function isPositionPlayable(x, y) {
+    if (playBoard[x][y] !== 0) return false;
+
+	playBoard[x][y] = 1;
+	myNewChains = myChains;
+	opponentNewChains = opponentChains;
+
+	//check all local player's chains 
+	var chainsToMerge = [];
+	var chainsToDeleteIndexes = [];
+    for (i = 0; i < myNewChains.length; i++) {
+		if (myNewChains[i].isFreedom(x, y)) {
+			chainsToMerge.push(myNewChains[i]);
+				chainsToDeleteIndexes.push(i);
+		}
+    }
+	if (chainsToMerge.length == 0) {
+		var newChain = new Chain(new Pawn(playerColor, x, y));
+	} else {
+		//merging here
+		newChain = new Chain(new Pawn(playerColor, parseInt(x), parseInt(y)));
+		chainsToMerge.forEach(function(chainToMerge) {
+			newChain.merge(chainToMerge);
+		});
+	}
+
+	//check if opponent's stone(s) have been taken
+	var i = 0;
+	while (i < opponentNewChains.length) {
+		for (j = 0; j < opponentNewChains[i].freedoms.length; j++){
+			if (opponentNewChains[i].freedoms[j].x == x && opponentNewChains[i].freedoms[j].y == y) {
+				opponentNewChains[i].freedoms.splice(j, 1);
+			}
+		}
+		if (!opponentNewChains[i].hasFreedom()) {
+			opponentNewChains[i].erase();
+			opponentNewChains.splice(i, 1);
+		} else {
+			i++;
+		}
+	}
+
+	checkAllChainsFreedoms();
+
+	//check if new chain has freedoms
+	if (newChain.hasFreedom()) {
+
+		while (chainsToDeleteIndexes.length > 0) {
+			deleteIndex = chainsToDeleteIndexes.pop();
+			myNewChains.splice(deleteIndex, 1);
+		}
+
+		myNewChains.push(newChain);
+		myChains = myNewChains;
+		opponentChains = opponentNewChains;
+		return true;
+	} else {
+		playBoard[x][y] = 0;
+		return false;
+	}
+}
+
+function hasClicked() {
+    if (gameIsOn !== "true") return;
+    if (myTurn) {
+		if (board.children.pawn != null) {
+				if (isPositionPlayable(circle.getAttribute("xCoord"), circle.getAttribute("yCoord"))) {
+				var newPawn = circle.cloneNode();
+				newPawn.setAttribute("opacity", "1");
+				newPawn.removeAttribute("id");
+				board.appendChild(newPawn);
+				var obj2send = { kind: "game", x: newPawn.getAttribute("xCoord"), y: newPawn.getAttribute("yCoord") };
+				Server.send( 'message', JSON.stringify(obj2send));
+				myTurn = false;
+			}
+		}
+    } else {
+        return;
+    }
+}
+</script>
+
+<style>
+</style>
